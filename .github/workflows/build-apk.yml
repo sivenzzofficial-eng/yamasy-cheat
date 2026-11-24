@@ -1,0 +1,62 @@
+name: Build APK Otomatis
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install, Setup Capacitor & Build APK
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            npm run build || true
+          fi
+          
+          # Deteksi folder hasil build (dist, build, atau root)
+          if [ -d "dist" ]; then
+            WEB_DIR="dist"
+          elif [ -d "build" ]; then
+            WEB_DIR="build"
+          else
+            WEB_DIR="www_app"
+            mkdir -p www_app
+            cp -r *.html *.js *.css assets public 2>/dev/null || true
+          fi
+
+          # Inisialisasi proyek & Capacitor jika belum ada
+          if [ ! -f "package.json" ]; then
+            npm init -y
+          fi
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "AplikasiAI" "com.ai.app" --web-dir $WEB_DIR
+          npx cap add android
+          npx cap sync android
+
+          # Compile menjadi APK
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload File APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hasil-aplikasi-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
