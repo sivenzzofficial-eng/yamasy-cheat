@@ -25,35 +25,23 @@ jobs:
 
       - name: Install, Setup Capacitor & Build APK
         run: |
-          if [ -f "package.json" ]; then
-            npm install --legacy-peer-deps
-            npm run build
-          fi
-          
-          # Deteksi folder hasil build (dist atau build)
-          if [ -d "dist" ]; then
-            WEB_DIR="dist"
-          elif [ -d "build" ]; then
-            WEB_DIR="build"
-          else
-            WEB_DIR="www_app"
-            mkdir -p www_app
-            cp -r *.html *.js *.css assets public 2>/dev/null || true
-          fi
+          npm install --legacy-peer-deps
+          npm run build
 
-          # Inisialisasi Capacitor dengan --legacy-peer-deps
-          if [ ! -f "package.json" ]; then
-            npm init -y
-          fi
+          # Instal Capacitor
           npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
-          
-          if [ ! -f "capacitor.config.json" ] && [ ! -f "capacitor.config.ts" ]; then
-            npx cap init "AplikasiAI" "com.ai.app" --web-dir $WEB_DIR
-          fi
-          
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
+
+          # Buat konfigurasi JSON langsung (menghindari bug parsing .ts)
+          cat << 'EOF' > capacitor.config.json
+          {
+            "appId": "com.yamasy.app",
+            "appName": "YamasyApp",
+            "webDir": "dist"
+          }
+          EOF
+
+          # Tambahkan Android & Sync
+          npx cap add android
           npx cap sync android
 
           # Compile menjadi APK
