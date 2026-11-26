@@ -127,12 +127,23 @@ export function matchQuestionFromDatabase(
   database: QuestionItem[]
 ): QuestionItem | undefined {
   const normalizedPrompt = promptText.trim().toLowerCase();
-  return database.find(
-    (item) =>
-      item.prompt.trim().toLowerCase() === normalizedPrompt ||
-      normalizedPrompt.includes(item.prompt.trim().toLowerCase()) ||
-      item.prompt.trim().toLowerCase().includes(normalizedPrompt)
-  );
+  if (!normalizedPrompt) return undefined;
+  return database.find((item) => {
+    const dbPrompt = item.prompt.trim().toLowerCase();
+    const ans = (item.correctAnswer || '').trim();
+    const ansLower = ans.toLowerCase();
+    // Ignore empty or generic placeholder answers so real AI solves them
+    const hasValidAnswer =
+      ans.length > 0 &&
+      ansLower !== 'jawaban essai' &&
+      ansLower !== 'soal essai';
+    return (
+      hasValidAnswer &&
+      (dbPrompt === normalizedPrompt ||
+        normalizedPrompt.includes(dbPrompt) ||
+        dbPrompt.includes(normalizedPrompt))
+    );
+  });
 }
 
 export function isTripleClick(timestamps: number[], now: number, windowMs = 700): {
@@ -186,7 +197,7 @@ export const DEFAULT_QUESTIONS: QuestionItem[] = [
   {
     id: 'q4',
     type: 'essai',
-    prompt: 'Apa kepanjangan dari RAM pada komponen perangkat keras komputer?',
-    correctAnswer: 'Random Access Memory',
+    prompt: 'Siapa nama bapak pandu dunia?',
+    correctAnswer: '', // Kosong di database lokal -> otomatis dicari oleh Bantuan AI via Google Search!
   },
 ];

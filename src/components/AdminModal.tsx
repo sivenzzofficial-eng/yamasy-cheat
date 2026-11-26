@@ -69,7 +69,7 @@ export default function AdminModal({
             id: `q-${Date.now()}`,
             type: 'essai',
             prompt: newPrompt.trim(),
-            correctAnswer: correctEssay.trim() || 'Jawaban Essai',
+            correctAnswer: correctEssay.trim(), // Jika dikosongkan Admin, otomatis dijawab oleh Bantuan AI Online!
           };
 
     onUpdateQuestions([...questions, item]);
@@ -260,14 +260,14 @@ export default function AdminModal({
               ) : (
                 <div>
                   <label htmlFor="admin-correct-essay" className="block text-xs text-slate-400 mb-1">
-                    Kunci Jawaban Essai
+                    Kunci Jawaban Essai (Kosongkan jika ingin dijawab otomatis oleh Bantuan AI)
                   </label>
                   <input
                     id="admin-correct-essay"
                     type="text"
                     value={correctEssay}
                     onChange={(e) => setCorrectEssay(e.target.value)}
-                    placeholder="Tulis jawaban essai yang akan diketik bot..."
+                    placeholder="Tulis kunci jawaban atau kosongkan agar dicari AI di internet..."
                     className="w-full px-3 py-2 bg-[#111827] border border-slate-800 rounded-lg text-xs text-white"
                   />
                 </div>
@@ -298,7 +298,9 @@ export default function AdminModal({
                       </p>
                       <p className="text-slate-400 font-mono">
                         Tipe: {q.type === 'pilihan_ganda' ? 'Pilihan Ganda' : 'Essai'} · Kunci:{' '}
-                        <span className="text-emerald-400">{q.correctAnswer}</span>
+                        <span className="text-emerald-400">
+                          {q.correctAnswer ? q.correctAnswer : 'Otomatis Dijawab Bantuan AI (Internet)'}
+                        </span>
                       </p>
                     </div>
                     <button

@@ -73,13 +73,17 @@ test('deductCoinsForFeature costs 5 coins per use and blocks when coins < 5', ()
   assert.equal(d3.remainingCoins, 0);
 });
 
-test('matchQuestionFromDatabase matches questions accurately', () => {
+test('matchQuestionFromDatabase matches questions in DB and returns undefined for un-databased questions so AI solves them', () => {
   const match = matchQuestionFromDatabase(
     'Manakah protokol jaringan yang digunakan untuk mengamankan komunikasi HTTP?',
     DEFAULT_QUESTIONS
   );
   assert.ok(match);
   assert.equal(match.correctAnswer, 'B');
+
+  // Un-databased question ("Siapa nama bapak pandu dunia?") has empty correctAnswer in DB, so it returns undefined to trigger AI Google Search
+  const unDatabased = matchQuestionFromDatabase('Siapa nama bapak pandu dunia?', DEFAULT_QUESTIONS);
+  assert.equal(unDatabased, undefined);
 });
 
 test('isTripleClick detects 3 rapid clicks within windowMs', () => {

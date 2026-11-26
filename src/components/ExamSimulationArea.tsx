@@ -1,18 +1,23 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, RotateCcw, Keyboard } from 'lucide-react';
+import { CheckCircle2, RotateCcw, Keyboard, Globe, Plus } from 'lucide-react';
 import { QuestionItem, matchQuestionFromDatabase } from '../utils/yamasyLogic';
+import { solveQuestionWithAi } from '../utils/aiSolver';
+import '../utils/nativeBridge';
 
 interface ExamSimulationAreaProps {
   questions: QuestionItem[];
   isBotOn: boolean;
+  isOnline: boolean;
   onBotFinished: () => void;
 }
 
 export default function ExamSimulationArea({
   questions,
   isBotOn,
+  isOnline,
   onBotFinished,
 }: ExamSimulationAreaProps) {
+  const [examQuestions, setExamQuestions] = useState<QuestionItem[]>(questions);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null);
   const [scanningChoice, setScanningChoice] = useState<string | null>(null);
@@ -20,9 +25,21 @@ export default function ExamSimulationArea({
   const [isEssayFocused, setIsEssayFocused] = useState(false);
   const [isFinished, setIsFinished] = useState(false);
   const [botStatusText, setBotStatusText] = useState('Menunggu instruksi panel...');
+  const [aiSourceBadge, setAiSourceBadge] = useState<string | null>(null);
   const [answersRecord, setAnswersRecord] = useState<Record<string, string>>({});
 
-  const currentQuestion = questions[currentIndex];
+  // Custom external question tester (not in Admin DB) to test AI Googling live
+  const [customExternalPrompt, setCustomExternalPrompt] = useState('');
+  const [customExternalType, setCustomExternalType] = useState<'essai' | 'pilihan_ganda'>('essai');
+
+  useEffect(() => {
+    setExamQuestions((prev) => {
+      const customOnly = prev.filter((q) => q.id.startsWith('ext-'));
+      return [...questions, ...customOnly];
+    });
+  }, [questions]);
+
+  const currentQuestion = examQuestions[currentIndex];
 
   const handleResetExam = () => {
     setCurrentIndex(0);
@@ -32,7 +49,39 @@ export default function ExamSimulationArea({
     setIsEssayFocused(false);
     setIsFinished(false);
     setAnswersRecord({});
+    setAiSourceBadge(null);
     setBotStatusText('Ujian direset. Siap dijalankan.');
+  };
+
+  const handleAddExternalQuestion = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customExternalPrompt.trim()) return;
+    const newExt: QuestionItem =
+      customExternalType === 'essai'
+        ? {
+            id: `ext-${Date.now()}`,
+            type: 'essai',
+            prompt: customExternalPrompt.trim(),
+            correctAnswer: '', // Empty so AI Google Search solves it!
+          }
+        : {
+            id: `ext-${Date.now()}`,
+            type: 'pilihan_ganda',
+            prompt: customExternalPrompt.trim(),
+            options: {
+              A: 'Lord Baden-Powell',
+              B: 'Abraham Lincoln',
+              C: 'Thomas Alva Edison',
+              D: 'Alexander Graham Bell',
+            },
+            correctAnswer: '', // Empty so AI Google Search solves it!
+          };
+
+    setExamQuestions((prev) => [...prev, newExt]);
+    setCustomExternalPrompt('');
+    if (isFinished) {
+      setIsFinished(false);
+    }
   };
 
   const handleNextManual = () => {
@@ -41,21 +90,27 @@ export default function ExamSimulationArea({
       currentQuestion.type === 'pilihan_ganda' ? selectedChoice || '' : essayValue;
     setAnswersRecord((prev) => ({ ...prev, [currentQuestion.id]: savedAns }));
 
-    if (currentIndex + 1 < questions.length) {
+    if (currentIndex + 1 < examQuestions.length) {
       setCurrentIndex((prev) => prev + 1);
       setSelectedChoice(null);
       setScanningChoice(null);
       setEssayValue('');
       setIsEssayFocused(false);
+      setAiSourceBadge(null);
     } else {
       setIsFinished(true);
     }
   };
 
-  // Bot automation effect when isBotOn is true (continues running even when panel is hidden!)
+  // Bot automation effect when isBotOn is true (continues running in background even when panel is hidden)
   useEffect(() => {
     if (!isBotOn) {
       setBotStatusText('Bot OFF');
+      return;
+    }
+
+    if (!isOnline) {
+      setBotStatusText('Koneksi terputus! Wajib ONLINE agar AI & Bot dapat bekerja.');
       return;
     }
 
@@ -70,100 +125,179 @@ export default function ExamSimulationArea({
     let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
 
-    const matched = matchQuestionFromDatabase(currentQuestion.prompt, questions);
-    const targetAnswer = matched ? matched.correctAnswer : currentQuestion.correctAnswer;
+    const runBotForCurrentQuestion = async () => {
+      setAiSourceBadge(null);
+      setBotStatusText(`Membaca soal #${currentIndex + 1} & mengecek database Admin...`);
 
-    setBotStatusText(`Membaca soal #${currentIndex + 1} & mengaitkan database...`);
+      // 1. Check Admin Database first
+      const matched = matchQuestionFromDatabase(currentQuestion.prompt, questions);
+      let targetAnswer = matched?.correctAnswer?.trim() || '';
 
-    if (currentQuestion.type === 'pilihan_ganda') {
-      const choices: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
-      choices.forEach((choice, idx) => {
+      // 2. If not found in Admin Database, use AI Assistant + Google Search (Googling)
+      if (!targetAnswer) {
+        setBotStatusText(
+          `Soal tidak ada di database! Bantuan AI sedang Googling jawaban di internet...`
+        );
+        try {
+          const resp = await fetch('/api/ai-answer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: currentQuestion.prompt,
+              type: currentQuestion.type,
+              options: currentQuestion.options,
+            }),
+          });
+          const data = await resp.json();
+          if (cancelled) return;
+          if (resp.ok && data.answer) {
+            targetAnswer = String(data.answer).trim();
+            setAiSourceBadge(data.source || 'Bantuan AI (Internet Search)');
+            setBotStatusText(`Bantuan AI menemukan jawaban dari internet: "${targetAnswer}"`);
+          } else {
+            const directResult = await solveQuestionWithAi({
+              prompt: currentQuestion.prompt,
+              type: currentQuestion.type,
+              options: currentQuestion.options,
+            });
+            if (cancelled) return;
+            targetAnswer = directResult.answer;
+            setAiSourceBadge(directResult.source);
+            setBotStatusText(`Bantuan AI menemukan jawaban dari internet: "${targetAnswer}"`);
+          }
+        } catch {
+          if (cancelled) return;
+          try {
+            const directResult = await solveQuestionWithAi({
+              prompt: currentQuestion.prompt,
+              type: currentQuestion.type,
+              options: currentQuestion.options,
+            });
+            if (cancelled) return;
+            targetAnswer = directResult.answer;
+            setAiSourceBadge(directResult.source);
+            setBotStatusText(`Bantuan AI menemukan jawaban dari internet: "${targetAnswer}"`);
+          } catch {
+            if (cancelled) return;
+            targetAnswer =
+              currentQuestion.type === 'pilihan_ganda'
+                ? 'A'
+                : 'Koneksi ke server AI terputus';
+            setAiSourceBadge('Error Koneksi AI');
+          }
+        }
+      } else {
+        setAiSourceBadge('Database Admin');
+      }
+
+      if (cancelled) return;
+
+      if (currentQuestion.type === 'pilihan_ganda') {
+        const choices: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
+        choices.forEach((choice, idx) => {
+          timers.push(
+            setTimeout(() => {
+              if (cancelled) return;
+              setScanningChoice(choice);
+              setBotStatusText(`Membaca pilihan ${choice} satu per satu...`);
+            }, 350 * (idx + 1))
+          );
+        });
+
         timers.push(
           setTimeout(() => {
             if (cancelled) return;
-            setScanningChoice(choice);
-            setBotStatusText(`Membaca pilihan ${choice} satu per satu...`);
-          }, 350 * (idx + 1))
+            setScanningChoice(null);
+            setSelectedChoice(targetAnswer);
+            setBotStatusText(`Memencet tombol pilihan ganda ${targetAnswer}`);
+            if (window.Android?.performAutoClick) {
+              window.Android.performAutoClick(540, 1200);
+            }
+          }, 1650)
         );
-      });
 
-      // Press matching option A/B/C/D
-      timers.push(
-        setTimeout(() => {
-          if (cancelled) return;
-          setScanningChoice(null);
-          setSelectedChoice(targetAnswer);
-          setBotStatusText(`Memencet tombol pilihan ganda ${targetAnswer}`);
-        }, 1650)
-      );
-
-      // Press Selanjutnya
-      timers.push(
-        setTimeout(() => {
-          if (cancelled) return;
-          setBotStatusText('Mencari & menekan tombol Selanjutnya...');
-          setAnswersRecord((prev) => ({ ...prev, [currentQuestion.id]: targetAnswer }));
-          if (currentIndex + 1 < questions.length) {
-            setCurrentIndex((prev) => prev + 1);
-            setSelectedChoice(null);
-            setEssayValue('');
-          } else {
-            setIsFinished(true);
-          }
-        }, 2350)
-      );
-    } else {
-      // Essai: focus column, type letter by letter according to keyboard, then click Selanjutnya
-      timers.push(
-        setTimeout(() => {
-          if (cancelled) return;
-          setIsEssayFocused(true);
-          setBotStatusText('Menekan kolom essai & mengetik sesuai keyboard...');
-        }, 400)
-      );
-
-      const chars = targetAnswer.split('');
-      chars.forEach((_, charIdx) => {
         timers.push(
           setTimeout(() => {
             if (cancelled) return;
-            setEssayValue(targetAnswer.slice(0, charIdx + 1));
-          }, 600 + charIdx * 65)
+            setBotStatusText('Mencari & menekan tombol Selanjutnya...');
+            if (window.Android?.performAutoClick) {
+              window.Android.performAutoClick(850, 1600);
+            }
+            setAnswersRecord((prev) => ({ ...prev, [currentQuestion.id]: targetAnswer }));
+            if (currentIndex + 1 < examQuestions.length) {
+              setCurrentIndex((prev) => prev + 1);
+              setSelectedChoice(null);
+              setEssayValue('');
+            } else {
+              setIsFinished(true);
+            }
+          }, 2350)
         );
-      });
+      } else {
+        timers.push(
+          setTimeout(() => {
+            if (cancelled) return;
+            setIsEssayFocused(true);
+            setBotStatusText('Menekan kolom essai & mengetik sesuai keyboard...');
+            if (window.Android?.performAutoType) {
+              window.Android.performAutoType(targetAnswer);
+            }
+          }, 350)
+        );
 
-      const finishTypingDelay = 600 + chars.length * 65 + 450;
-      timers.push(
-        setTimeout(() => {
-          if (cancelled) return;
-          setIsEssayFocused(false);
-          setBotStatusText('Selesai mengetik essai, langsung lanjut...');
-          setAnswersRecord((prev) => ({ ...prev, [currentQuestion.id]: targetAnswer }));
-          if (currentIndex + 1 < questions.length) {
-            setCurrentIndex((prev) => prev + 1);
-            setSelectedChoice(null);
-            setEssayValue('');
-          } else {
-            setIsFinished(true);
-          }
-        }, finishTypingDelay)
-      );
-    }
+        const chars = targetAnswer.split('');
+        chars.forEach((_, charIdx) => {
+          timers.push(
+            setTimeout(() => {
+              if (cancelled) return;
+              setEssayValue(targetAnswer.slice(0, charIdx + 1));
+            }, 550 + charIdx * 55)
+          );
+        });
+
+        const finishTypingDelay = 550 + chars.length * 55 + 450;
+        timers.push(
+          setTimeout(() => {
+            if (cancelled) return;
+            setIsEssayFocused(false);
+            setBotStatusText('Selesai mengetik essai, langsung lanjut...');
+            setAnswersRecord((prev) => ({ ...prev, [currentQuestion.id]: targetAnswer }));
+            if (currentIndex + 1 < examQuestions.length) {
+              setCurrentIndex((prev) => prev + 1);
+              setSelectedChoice(null);
+              setEssayValue('');
+            } else {
+              setIsFinished(true);
+            }
+          }, finishTypingDelay)
+        );
+      }
+    };
+
+    void runBotForCurrentQuestion();
 
     return () => {
       cancelled = true;
       timers.forEach(clearTimeout);
     };
-  }, [isBotOn, currentIndex, isFinished, currentQuestion, questions, onBotFinished]);
+  }, [isBotOn, isOnline, currentIndex, isFinished, currentQuestion, questions, examQuestions.length, onBotFinished]);
 
   return (
     <div className="bg-[#111827] border border-slate-800 rounded-2xl p-6 space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-800">
         <div>
-          <h3 className="text-base font-bold text-white">Layar Target Soal (Aksesibilitas Bot)</h3>
-          <p className="text-xs text-slate-400">
+          <h3 className="text-base font-bold text-white">
+            Layar Target Soal (Database Admin + Bantuan AI Google Search)
+          </h3>
+          <p className="text-xs text-slate-400 mt-0.5">
             Status Bot: <span className="font-mono text-blue-400">{botStatusText}</span>
           </p>
+          {aiSourceBadge && (
+            <p className="text-[11px] font-mono text-emerald-400 mt-1 flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5" />
+              <span>Sumber Jawaban: {aiSourceBadge}</span>
+            </p>
+          )}
         </div>
 
         <button
@@ -180,10 +314,11 @@ export default function ExamSimulationArea({
         <div className="space-y-4">
           <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
             <span>
-              SOAL {currentIndex + 1} DARI {questions.length}
+              SOAL {currentIndex + 1} DARI {examQuestions.length}
             </span>
             <span>
-              TIPE: {currentQuestion.type === 'pilihan_ganda' ? 'PILIHAN GANDA' : 'ESSAI'}
+              TIPE: {currentQuestion.type === 'pilihan_ganda' ? 'PILIHAN GANDA' : 'ESSAI'} ·{' '}
+              {currentQuestion.correctAnswer ? 'ADA DI DATABASE' : 'TIDAK ADA DI DB (DIJAWAB AI)'}
             </span>
           </div>
 
@@ -271,6 +406,48 @@ export default function ExamSimulationArea({
           </p>
         </div>
       )}
+
+      {/* Uji Coba Pertanyaan di Luar Database (Agar Bantuan AI Googling Langsung) */}
+      <form
+        onSubmit={handleAddExternalQuestion}
+        className="pt-4 border-t border-slate-800 space-y-2.5"
+      >
+        <div className="flex items-center justify-between">
+          <label
+            htmlFor="external-ai-question-input"
+            className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"
+          >
+            <Globe className="w-3.5 h-3.5 text-blue-400" />
+            <span>Tes Soal di Luar Database (Dijawab Otomatis oleh Bantuan AI via Internet)</span>
+          </label>
+          <select
+            aria-label="Tipe soal luar database"
+            value={customExternalType}
+            onChange={(e) => setCustomExternalType(e.target.value as 'essai' | 'pilihan_ganda')}
+            className="px-2 py-1 rounded-lg bg-[#090d16] border border-slate-800 text-xs text-slate-300"
+          >
+            <option value="essai">Essai</option>
+            <option value="pilihan_ganda">Pilihan Ganda</option>
+          </select>
+        </div>
+        <div className="flex gap-2">
+          <input
+            id="external-ai-question-input"
+            type="text"
+            value={customExternalPrompt}
+            onChange={(e) => setCustomExternalPrompt(e.target.value)}
+            placeholder="Contoh: Siapa nama bapak pandu dunia?"
+            className="flex-1 px-3.5 py-2 rounded-xl bg-[#090d16] border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+          />
+          <button
+            type="submit"
+            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Tambah Soal</span>
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

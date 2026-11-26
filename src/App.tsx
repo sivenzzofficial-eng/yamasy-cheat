@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Coins, Sparkles, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Coins, Sparkles, ShieldCheck, AlertCircle, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import LoginPage from './components/LoginPage';
 import WelcomeLoadingScreen from './components/WelcomeLoadingScreen';
 import TopUpScreen from './components/TopUpScreen';
@@ -21,13 +21,14 @@ import {
   deductCoinsForFeature,
   isTripleClick,
 } from './utils/yamasyLogic';
+import { launchExternalFloatingPanelWindow } from './utils/nativeBridge';
 
 type ScreenView = 'login' | 'welcome_loading' | 'dashboard' | 'topup';
 
 const STORAGE_KEYS = {
   REMEMBER_LOGIN: 'yamasy_remember_device_v1',
   REDEEM_STATE: 'yamasy_redeem_state_v1',
-  QUESTIONS_DB: 'yamasy_questions_db_v1',
+  QUESTIONS_DB: 'yamasy_questions_db_v2',
 };
 
 export default function App() {
@@ -39,6 +40,45 @@ export default function App() {
     const remembered = localStorage.getItem(STORAGE_KEYS.REMEMBER_LOGIN);
     return remembered === 'true' ? 'dashboard' : 'login';
   });
+
+  // Strict Online Requirement (.bikin biar harus online biar memaksimalkan)
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [checkingConnection, setCheckingConnection] = useState(false);
+
+  const verifyServerOnline = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setIsOnline(false);
+      return;
+    }
+    setCheckingConnection(true);
+    try {
+      const res = await fetch('/api/online-check', { cache: 'no-store' });
+      setIsOnline(res.ok);
+    } catch {
+      setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    } finally {
+      setCheckingConnection(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      void verifyServerOnline();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [verifyServerOnline]);
 
   const [redeemState, setRedeemState] = useState<RedeemState>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.REDEEM_STATE);
@@ -86,6 +126,18 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS.QUESTIONS_DB, JSON.stringify(questions));
   }, [questions]);
 
+  const isBotOnRef = useRef(isBotOn);
+  useEffect(() => {
+    isBotOnRef.current = isBotOn;
+  }, [isBotOn]);
+
+  // If device goes offline while bot is ON, pause bot until back online
+  useEffect(() => {
+    if (!isOnline && isBotOn) {
+      setIsBotOn(false);
+    }
+  }, [isOnline, isBotOn]);
+
   // .f3: When hidden, panel stays running in background without any visible icon on screen,
   // and clicking 3 times rapidly anywhere on screen brings the panel back.
   useEffect(() => {
@@ -97,6 +149,9 @@ export default function App() {
       clickTimestampsRef.current = result.updatedTimestamps;
       if (result.triggered) {
         setIsPanelHidden(false);
+        if (window.Android?.showFloatingOverlayService) {
+          window.Android.showFloatingOverlayService();
+        }
       }
     };
 
@@ -118,6 +173,11 @@ export default function App() {
   }, []);
 
   const activateFloatingPanelWithCoins = () => {
+    if (!isOnline) {
+      setCoinWarning('Wajib terhubung ke internet (ONLINE) untuk mengaktifkan Fitur Utama & Bantuan AI.');
+      return;
+    }
+
     const deduction = deductCoinsForFeature(redeemState.coins);
     if (!deduction.success) {
       setCoinWarning(
@@ -133,10 +193,26 @@ export default function App() {
     }));
     setShowFloatingPanel(true);
     setIsPanelHidden(false);
+
+    void launchExternalFloatingPanelWindow({
+      getIsBotOn: () => isBotOnRef.current,
+      onToggleBot: () => setIsBotOn((prev) => !prev),
+      onHidePanel: () => {
+        setIsPanelHidden(true);
+        if (window.Android?.hideFloatingOverlayService) {
+          window.Android.hideFloatingOverlayService();
+        }
+      },
+    });
   };
 
   const handlePressMainFeature = () => {
     setCoinWarning('');
+    if (!isOnline) {
+      setCoinWarning('Aplikasi wajib ONLINE untuk memaksimalkan Fitur Utama & Bantuan AI.');
+      return;
+    }
+
     if (showFloatingPanel) {
       setIsPanelHidden(false);
       return;
@@ -167,29 +243,74 @@ export default function App() {
     setIsBotOn(false);
   }, []);
 
+  // Mandatory Online Blocker Overlay if device goes offline
+  const offlineBlocker = !isOnline ? (
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
+    >
+      <div className="w-full max-w-md bg-[#111827] border border-red-800/80 rounded-2xl p-6 text-center space-y-4 shadow-2xl">
+        <div className="w-12 h-12 rounded-2xl bg-red-950/80 border border-red-700/60 flex items-center justify-center mx-auto text-red-400">
+          <WifiOff className="w-6 h-6" />
+        </div>
+        <h2 className="text-lg font-bold text-white">Koneksi Internet Wajib Online</h2>
+        <p className="text-xs text-slate-300 leading-relaxed">
+          Aplikasi <span className="font-semibold text-white">yamasy</span> mewajibkan perangkat
+          terhubung ke internet (ONLINE) agar sinkronisasi database Admin dan Bantuan AI Google
+          Search berjalan maksimal.
+        </p>
+        <button
+          type="button"
+          onClick={() => void verifyServerOnline()}
+          disabled={checkingConnection}
+          className="w-full h-10 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+        >
+          <RefreshCw className={`w-4 h-4 ${checkingConnection ? 'animate-spin' : ''}`} />
+          <span>{checkingConnection ? 'Memeriksa Koneksi...' : 'Coba Hubungkan Ulang'}</span>
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   if (screen === 'login') {
-    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <>
+        {offlineBlocker}
+        <LoginPage onLoginSuccess={handleLoginSuccess} />
+      </>
+    );
   }
 
   if (screen === 'welcome_loading') {
-    return <WelcomeLoadingScreen onComplete={handleWelcomeComplete} />;
+    return (
+      <>
+        {offlineBlocker}
+        <WelcomeLoadingScreen onComplete={handleWelcomeComplete} />
+      </>
+    );
   }
 
   if (screen === 'topup') {
     return (
-      <TopUpScreen
-        redeemState={redeemState}
-        onUpdateRedeemState={setRedeemState}
-        onBack={() => {
-          setCoinWarning('');
-          setScreen('dashboard');
-        }}
-      />
+      <>
+        {offlineBlocker}
+        <TopUpScreen
+          redeemState={redeemState}
+          onUpdateRedeemState={setRedeemState}
+          onBack={() => {
+            setCoinWarning('');
+            setScreen('dashboard');
+          }}
+        />
+      </>
     );
   }
 
   return (
     <div className="min-h-screen flex flex-col justify-between bg-[#090d16] text-slate-100 px-4 py-6">
+      {offlineBlocker}
+
       <div className="w-full max-w-3xl mx-auto space-y-6">
         {/* Header yamasy */}
         <header className="flex items-center justify-between pb-4 border-b border-slate-800">
@@ -205,7 +326,15 @@ export default function App() {
             </button>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <div
+              data-testid="online-status-indicator"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#111827] border border-slate-800 text-xs font-mono text-emerald-400"
+            >
+              <Wifi className="w-3.5 h-3.5" />
+              <span>ONLINE + AI</span>
+            </div>
+
             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#111827] border border-slate-800">
               <Coins className="w-4 h-4 text-amber-400" />
               <span data-testid="coin-balance" className="text-sm font-mono font-semibold text-white">
@@ -278,16 +407,17 @@ export default function App() {
                   ? isPanelHidden
                     ? 'Panel Aktif di Latar Belakang (Klik 3x layar untuk muncul)'
                     : 'Panel Melayang Aktif'
-                  : `Aktifkan Panel Bot Jawab Otomatis (${COINS_PER_USE} Koin)`}
+                  : `Aktifkan Panel Bot + Bantuan AI (${COINS_PER_USE} Koin)`}
               </span>
             </button>
           </div>
         </section>
 
-        {/* Simulasi Target Soal Ujian untuk Bot Jawab Otomatis */}
+        {/* Simulasi Target Soal Ujian untuk Bot Jawab Otomatis + Bantuan AI */}
         <ExamSimulationArea
           questions={questions}
           isBotOn={isBotOn}
+          isOnline={isOnline}
           onBotFinished={handleBotFinished}
         />
       </div>
